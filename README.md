@@ -165,3 +165,37 @@ dispatcher.call("monitor", Map.of("target", "com.example.app"));
 ## License
 
 同主仓库 — Apache License 2.0
+
+---
+
+## ClipStack 插件使用说明
+
+ClipStack 插件用于自动管理旧版剪贴板应用 [Tiny Clipboard Manager](https://github.com/catchingnow/tinyclipboardmanager) 的权限。
+
+### 背景
+
+旧版 Tiny Clipboard Manager（包名 `com.catchingnow.tinyclipboardmanager`）需要手动通过 ADB 或 Shizuku 授予悬浮窗和日志权限才能正常显示悬浮窗和通知。每次重启设备或清除应用数据后都需要重新授权。
+
+### 插件功能
+
+ClipStack 插件通过 Plugin Framework + Shizuku 自动完成以下操作：
+
+1. **授予悬浮窗权限**：`appops set com.catchingnow.tinyclipboardmanager SYSTEM_ALERT_WINDOW allow`
+2. **授予日志权限**：`pm grant com.catchingnow.tinyclipboardmanager android.permission.READ_LOGS`
+3. **重启剪贴板服务**：强制停止并重新启动应用
+
+### 使用步骤
+
+1. 在手机上下载并安装旧版 [Tiny Clipboard Manager](https://f-droid.org/repo/com.catchingnow.tinyclipboardmanager_35.apk)
+2. 下载 [ClipStackPlugin.java](plugins/ClipStackPlugin.java)，编译打包为 jar
+3. 在 Plugin Framework 应用中导入 `ClipStackPlugin.jar`
+4. 点击执行 → 自动完成授权和重启
+
+### 编译命令
+
+```bash
+javac -cp plugin-framework-stubs.jar ClipStackPlugin.java
+mkdir -p META-INF
+echo "mainClass=com.plugin.clipstack.ClipStackPlugin" > META-INF/plugin.properties
+jar cf ClipStackPlugin.jar com/ META-INF/
+```
