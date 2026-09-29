@@ -71,16 +71,34 @@ mainClass=com.example.MyPlugin
 
 ### 4. 编译打包
 
+**关键点：jar 里必须是 `classes.dex`，不能是 `.class`。** 框架用 `DexClassLoader` 加载，只有 JVM 字节码的 jar 会报 `Failed to open dex files ... Entry not found`，插件不会出现在列表里。
+
+本仓库提供封装好的 `build.sh`：
+
+```bash
+./build.sh plugins/MyPlugin.java com.example.MyPlugin "/path/to/host-classes.jar:/path/to/android.jar"
+```
+
+它依次完成 javac → d8 → 写入 `META-INF/plugin.properties` → 打包，产出 `MyPlugin.jar`。
+
+手动执行等价于：
+
 ```bash
 # 1) 编译
-javac -cp host-classes.jar -d build src/com/example/MyPlugin.java
+javac -cp host-classes.jar -d build/classes src/com/example/MyPlugin.java
 
-# 2) 放入声明文件
+# 2) 转成 dex
+D8_JAR=$ANDROID_HOME/build-tools/<版本>/lib/d8.jar
+java -cp "$D8_JAR" com.android.tools.r8.D8 --min-api 24 --output build/dex \
+    $(find build/classes -name '*.class')
+
+# 3) 声明入口类
 mkdir -p build/META-INF
 echo "mainClass=com.example.MyPlugin" > build/META-INF/plugin.properties
 
-# 3) 打包
-jar cf MyPlugin.jar -C build .
+# 4) 打包
+cp build/dex/classes.dex build/classes.dex
+( cd build && jar cf ../MyPlugin.jar classes.dex META-INF/plugin.properties )
 ```
 
 ### 5. 导入框架
@@ -91,8 +109,11 @@ jar cf MyPlugin.jar -C build .
 
 | 文件 | 说明 | Shizuku |
 |------|------|---------|
-| [ExamplePlugin.java](plugins/ExamplePlugin.java) | 读取设备信息（品牌、型号、系统版本、屏幕、电池） | 需要 |
 | [TestPlugin.java](plugins/TestPlugin.java) | 最小模板，回显参数与当前身份，演示免提权插件 | 不需要 |
+| [ExamplePlugin.java](plugins/ExamplePlugin.java) | 基础示例，读取型号 / 系统版本 / 屏幕 / 电池 | 需要 |
+| [DeviceInfoPlugin.java](plugins/DeviceInfoPlugin.java) | 完整示例，`getProp` + `execCommand` 组合并做分段格式化输出 | 需要 |
+
+三个插件的 jar 都可以用 `build.sh` 直接构建。
 
 ## 接口参考
 
@@ -208,10 +229,13 @@ val result = dispatcher.call("monitor", mapOf("target" to "com.example.app"))
 插件没出现在列表里：
 
 1. 确认是 `.jar`，扩展名正确
-2. 确认 jar 内含 `META-INF/plugin.properties`
-3. 确认 `mainClass` 与真实类名一致
-4. 确认类实现了 `Plugin` 接口
-5. 确认 `execute` 用的是 `Map<String, ?>` 签名
+2. 确认 jar 内有 `classes.dex`（用 `unzip -l XxxPlugin.jar` 查看；只有 `.class` 一定加载失败）
+3. 确认 jar 内含 `META-INF/plugin.properties`
+4. 确认 `mainClass` 与真实类名一致
+5. 确认类实现了 `Plugin` 接口
+6. 确认 `execute` 用的是 `Map<String, ?>` 签名
+
+日志里出现 `Failed to open dex files from <path> because: Entry not found` 就是第 2 条。
 
 执行报 `Error: 未获取Shizuku权限，请先授权`：打开 Shizuku 应用重新授权本框架。
 
