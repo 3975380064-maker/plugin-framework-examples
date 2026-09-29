@@ -4,6 +4,27 @@
 
 框架 v2.1 起只接受 `.jar` 插件包，且必须在 jar 内声明 `META-INF/plugin.properties`。
 
+## 插件契约（写之前先看这节）
+
+宿主加载插件时做的是 `classLoader.loadClass(mainClass).getDeclaredConstructor().newInstance()`，
+因此插件类必须满足：
+
+1. **类名与 `mainClass` 完全一致**（含包名），且类是 `public`
+2. **有无参构造函数**（默认构造函数即可；不要写只有带参构造的类）
+3. **实现 `Plugin` 接口**（常驻插件实现 `BackgroundPlugin`，它继承 `Plugin`）
+4. 打包成 `.jar`，且 jar 内 **必须有 `classes.dex`**（不是 `.class`）
+5. jar 内必须有 `META-INF/plugin.properties`，声明 `mainClass`
+6. 一个插件只能有一个 dex 文件（不要生成 `classes2.dex`），插件类应保持精简
+
+`execute(proxy, args)` 的 `args` 语义：
+
+| 调用来源 | args 内容 |
+|----------|-----------|
+| 应用内「手动执行」按钮 | `null` |
+| 子插件调度 `dispatcher.call(id, extra)` | `{"subPluginId": id}` 加上 `extra` 的内容 |
+
+也就是说：**想让插件可配置，就走子插件调度**，界面上的手动执行不传参。
+
 ## 快速开始
 
 ### 1. 引入宿主接口
@@ -103,17 +124,17 @@ cp build/dex/classes.dex build/classes.dex
 
 ### 5. 导入框架
 
-打开 Plugin Framework 应用，点右下角 `+`，选择 `MyPlugin.jar`。插件会立即出现在「手动执行」Tab。
+打开 Plugin Framework 应用，点右下角 `+`，选择 `MyPlugin.jar`。非后台插件会出现在「一次性任务」Tab。
 
 ## 示例插件
 
-| 文件 | 说明 | Shizuku |
-|------|------|---------|
-| [TestPlugin.java](plugins/TestPlugin.java) | 最小模板，回显参数与当前身份，演示免提权插件 | 不需要 |
-| [ExamplePlugin.java](plugins/ExamplePlugin.java) | 基础示例，读取型号 / 系统版本 / 屏幕 / 电池 | 需要 |
-| [DeviceInfoPlugin.java](plugins/DeviceInfoPlugin.java) | 完整示例，`getProp` + `execCommand` 组合并做分段格式化输出 | 需要 |
+| 文件 | 说明 | 需要 Shizuku |
+|------|------|------|
+| [TestPlugin.java](plugins/TestPlugin.java) | 最小模板：回显参数与当前身份，演示免提权插件 | 否 |
+| [DeviceInfoPlugin.java](plugins/DeviceInfoPlugin.java) | 只读示例：`getProp` + `execCommand` 组合并分段格式化 | 是 |
+| [BackgroundMonitor.kt](plugins/BackgroundMonitor.kt) | 常驻示例：`BackgroundPlugin` 循环 + `subPlugins` + `dispatcher.call(id, args)` | 是 |
 
-三个插件的 jar 都可以用 `build.sh` 直接构建。
+`BackgroundMonitor` 带一份 [同名 .properties](plugins/BackgroundMonitor.properties) 示例，演示 `subPlugins` 声明；`build.sh` 会自动采用它。
 
 ## 接口参考
 
@@ -163,24 +184,16 @@ interface BackgroundPlugin : Plugin {
 
 **后台常驻插件必须用 Kotlin 编写。** `runInBackground` 是 Kotlin 的 `suspend fun`，Java 编译后的签名会多出一个 `Continuation<? super Unit>` 参数，无法用普通 Java 方法实现。
 
-Kotlin 示例：
+完整可编译示例见 [plugins/BackgroundMonitor.kt](plugins/BackgroundMonitor.kt)：
 
 ```kotlin
-package com.example
-
-import com.java.myapplication.BackgroundPlugin
-import com.java.myapplication.ShizukuProxy
-import com.java.myapplication.SubPluginDispatcher
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-
-class MyBackgroundPlugin : BackgroundPlugin {
-
-    override fun getName() = "MyBackgroundPlugin"
-    override fun getDescription() = "每 5 秒读取一次亮度"
+class BackgroundMonitor : BackgroundPlugin {
+    override fun getName() = "BackgroundMonitor"
+    override fun getDescription() = "每 10 秒采样一次"
     override fun getVersion() = "1.0.0"
-    override fun execute(proxy: ShizukuProxy, args: Map<String, Any>?) = "常驻插件无手动执行入口"
+
+    override fun execute(proxy: ShizukuProxy, args: Map<String, Any>?) =
+        "这是常驻插件，请在「长期任务」Tab 启动"
 
     override suspend fun runInBackground(
         proxy: ShizukuProxy,
@@ -188,14 +201,26 @@ class MyBackgroundPlugin : BackgroundPlugin {
         dispatcher: SubPluginDispatcher
     ) {
         while (scope.isActive) {
-            val brightness = proxy.getSetting("system", "screen_brightness")
-            delay(5_000)
+            val battery = dispatcher.call("battery")
+            delay(10_000)
         }
     }
 }
 ```
 
-`scope` 由宿主管理，点「停止」或宿主销毁时会取消，循环会随之中断。
+`scope` 由宿主管理，点「停止」或宿主进程结束时取消，循环随之中断。
+运行期间宿主会拉起前台服务保活，所以退出界面不会中断任务。
+
+构建 Kotlin 插件需要额外两个变量（`kotlin-compiler-embeddable` 自身还依赖 kotlin-reflect 等）：
+
+```bash
+KOTLINC_CP="/path/kotlin-compiler-embeddable.jar:/path/kotlin-stdlib.jar:/path/kotlin-reflect.jar:..."
+KOTLIN_CP="/path/kotlin-stdlib.jar:/path/kotlinx-coroutines-core-jvm.jar"
+KOTLINC_CP="$KOTLINC_CP:$KOTLIN_CP" \
+KOTLIN_CP="$KOTLIN_CP" \
+  ./build.sh plugins/BackgroundMonitor.kt com.plugin.monitor.BackgroundMonitor \
+    "/path/to/host-classes.jar:/path/to/android.jar"
+```
 
 ## 进阶：子插件
 
@@ -211,10 +236,18 @@ subPlugins=monitor,kill,skip
 常驻插件通过 `SubPluginDispatcher` 调用：
 
 ```kotlin
-val result = dispatcher.call("monitor", mapOf("target" to "com.example.app"))
+val battery = dispatcher.call("battery")
+val model = dispatcher.call("prop", mapOf("key" to "ro.product.model"))
 ```
 
 同一个子插件 ID 串行执行，不会并发触发。
+
+调用参数会透传到被调度插件的 `execute`：上面第二行拿到的 `args` 是
+`{"subPluginId": "prop", "key": "ro.product.model"}`。
+
+注意子插件 ID 由**声明它的那个插件自己**响应——宿主遍历已加载插件，找到 `plugin.properties`
+里 `subPlugins` 包含该 ID 的插件，然后把 `subPluginId` 交给它的 `execute`。
+因此 `BackgroundMonitor` 里调用的 `battery` / `prop` 最终走回它自己的 `execute` 分支。
 
 ## 注意事项
 
